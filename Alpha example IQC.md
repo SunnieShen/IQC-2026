@@ -35,7 +35,7 @@ Sharpe1.42Turnover13.09%Fitness1.06Returns7.30%Drawdown6.66%Margin11.15‱
 `ts_rank(est_eps/close,60)` → `temp = group_backfill(est_eps/close, industry, 20); group_rank(ts_rank(temp, 60), industry)`
 ![[Pasted image 20260506210049.png]]
 
-### 5. Short-Term Sentiment Volume Stability
+### 5. Short-Term Sentiment Volume Stability (测试中)
 
 - **Hypothesis** A high 10-day standard deviation of sentiment volume for a stock means that investor attention is unstable, with frequent spikes and drops in how much the stock is discussed. This unstable attention is often driven by short-lived news or hype and may lead to noisy, unsustainable price moves, causing the stock to underperform afterward.（讨论热度波动大 → 后或跑输。）
 - **Implementation** Take the 10-day rolling standard deviation of relative sentiment volume `scl12_buzz` and negate it.（高 std → 取负偏好稳定。）
@@ -55,15 +55,28 @@ Sharpe1.42Turnover13.09%Fitness1.06Returns7.30%Drawdown6.66%Margin11.15‱
 
 **Quick check（附录）** 日频门控 vs 财报披露节奏；尺度用比率 / `ts_rank` / `group_rank`；NaN；`Decay` / `Truncation` 与流动性过滤。
 
-- **Idea:** Debt of a firm represents the amount of loans a firm has taken. Lower Debt generally means lower risk. Hence, a firm with decreasing debt tends to be a healthier firm (all things being equal) and we should go long on it and vice versa for a firm with increasing debt.
-- **Expression:** Rank(-ts_delta(debt,90))
-- **Settings:** Select TOP3000 with Sector Neutralization
+### 6. Debt Trend Health
+
+- **Hypothesis** Debt of a firm represents the amount of loans it has taken. Lower debt generally means lower financing risk; therefore, firms with decreasing debt tend to be healthier (all else equal), so we long them, and short firms with rising debt.（降债偏多、加债偏空。）
+- **Implementation** Measure medium-term debt change and negate it so debt reduction gets higher score: `rank(-ts_delta(debt,90))`.（`90` 日抓中期资产负债表变化，先做方向再 rank。）
+- **Hints to Implement** Debt levels vary a lot across sectors and update at low frequency; apply sector neutralization and test shorter/longer change windows to balance responsiveness and noise.
+
+`rank(-ts_delta(debt,90))` → `rank(-ts_delta(debt,21))` (先做行业内比较，降低结构偏置。）
+
+**思路（如何优化）**
+
+- 先固定中性化：`Sector Neutralization`，避免把“行业资本结构差异”误当 alpha。
+- 再扫时间窗：`63 / 90 / 126`，看哪一档在 `Sharpe-Fitness-Turnover` 上更平衡。
+- 若子宇宙掉得快：加流动性门槛（如 `volume/adv20 > 0.6`）或提高 `Decay` 抑制低流动性噪声。
+- 若覆盖不足或跳变明显：可对 debt 先做 backfill（若平台可用）再 `ts_delta`。
+
+Settings（建议）: `USA | TOP3000 | Decay 4~6 | Delay 1 | Truncation 0.08 | Neutralization Sector | Pasteurization On`.
 
 ### 7. Valuation based on cash flow
 
 - **Hypothesis** A lower `EV/CF` usually suggests the company is becoming cheaper relative to its cash-generating ability; a higher multiple suggests it is getting more expensive.（`EV/CF` 下降偏多、上升偏空。）
 - **Implementation** Use `ts_zscore` to standardize the time-series change of valuation ratio, then use `group_rank` to control cross-sectional turnover and industry structure.（先时序标准化，再行业横截面排序。）
-- **Hints to Implement** There are various types of cash flow; switching cashflow type in the denominator may improve robustness and coverage. 
+- **Hints to Implement** There are various types of cash flow; switching cashflow type in the denominator may improve robustness and coverage.
 
 `group_rank(-ts_zscore(enterprise_value/cashflow,63),industry)` → `group_rank(-ts_zscore(enterprise_value/cashflow_dividends,63),industry)`**可分配、对股东真正可兑现**的现金能力，所以在估值里信息密度更高
 
@@ -77,9 +90,10 @@ Settings（from source）: `USA | TOP3000 | Decay 0 | Delay 1 | Truncation 0.08 
 - **Implementation** Use `ts_corr(est_ptp, est_fcf, window)` to capture the co-movement dynamics between target price and cashflow expectation.
 - **Hints to Implement** A 1-year window can be too slow for correction trades; test shorter windows for faster reaction.
 
-`-ts_corr(est_ptp,est_fcf,252)` → `-ts_corr(est_ptp,est_fcf,63)`（短窗更快，通常更贴近“过度定价后回归”节奏。）
+`-ts_corr(est_ptp,est_fcf,252)` → `-ts_corr(est_ptp,est_fcf,21)`（短窗更快，通常更贴近“过度定价后回归”节奏。）
 
 Settings（from source）: `USA | TOP3000 | Decay 0 | Delay 1 | Truncation 0.08 | Neutralization Market | Pasteurization On`.
+![[Pasted image 20260508145248.png]]
 
 ### 9. Volatility arbitrage
 
@@ -90,3 +104,63 @@ Settings（from source）: `USA | TOP3000 | Decay 0 | Delay 1 | Truncation 0.08 
 `implied_volatility_call_120/parkinson_volatility_120` → `ts_backfill(implied_volatility_call_120,120)/parkinson_volatility_120`（先补齐隐波缺失，减少 NaN 导致的权重断裂。）
 
 Settings（from source）: `USA | TOP200 | Decay 0 | Delay 1 | Truncation 0.08 | Neutralization Sector | Pasteurization On`.
+
+### 10. Implied Volatility Spread as a predictor
+
+- **Hypothesis** If call open interest is higher than put open interest, upside sentiment may dominate; the larger call-put IV spread, the stronger potential upside (and vice versa).（看涨持仓占优时，IV spread 更有方向信息。）
+- **Implementation** Use `trade_when` with `pcr_oi_270 < 1` as participation filter, then trade on `(implied_volatility_call_270 - implied_volatility_put_270)`.
+- **Hints to Implement** Try custom neutralization based on self-created groups (e.g., historical volatility buckets) to improve sub-universe robustness.
+
+`trade_when(pcr_oi_270 < 1, (implied_volatility_call_270-implied_volatility_put_270), -1)` → `group_neutralize(trade_when(pcr_oi_270 < 1, (implied_volatility_call_270-implied_volatility_put_270), -1), bucket(rank(ts_std_dev(returns,60)), range="0,1,0.1"))`（按历史波动分桶中性化，减少结构偏置。）
+
+Settings（from source）: `USA | TOP3000 | Decay 4 | Delay 1 | Truncation 0.08 | Neutralization Market | Pasteurization On`.
+
+### 11. 6-Month Call-Put Volatility Skew
+
+- **Hypothesis** When call IV is higher than put IV relative to average ATM IV, options traders may be focusing more on upside than downside risk.（6个月 call-put skew 越高，偏多情绪越强。）
+- **Implementation** Use normalized skew: `(implied_volatility_call_180 - implied_volatility_put_180) / implied_volatility_mean_180`.
+- **Hints to Implement** Preprocess with `ts_backfill()` to pass weight/coverage tests; reduce turnover via smoothing/decay.
+
+`(implied_volatility_call_180-implied_volatility_put_180)/implied_volatility_mean_180` → `ts_decay_linear((ts_backfill(implied_volatility_call_180,60)-ts_backfill(implied_volatility_put_180,60))/max(ts_backfill(implied_volatility_mean_180,60),0.01),8)`（先补缺失，再加平滑降换手。）
+
+Settings（from source）: `USA | TOP3000 | Decay 0 | Delay 0 | Truncation 0.08 | Neutralization Subindustry | Pasteurization On`.
+
+### 12. 5-Day Peer vs. Stock Performance Gap
+
+- **Hypothesis** If peer group outperforms the stock over 5 days, the stock may be a short-term laggard with mean-reversion upside.（同伴涨得更多而个股滞后，短期补涨概率上升。）
+- **Implementation** Compare 5-day compounded returns of peers (`rel_ret_all`) vs stock (`returns`) and trade the gap.
+- **Hints to Implement** Use `trade_when` so trades happen only when the gap is meaningful, to reduce noise turnover.
+
+`cum_rel_return-cum_return` → `gap = cum_rel_return-cum_return; trade_when(abs(gap) > ts_std_dev(gap,60), gap, -1)`（只在显著偏离时交易。）
+
+Settings（from source）: `USA | TOP3000 | Decay 0 | Delay 1 | Truncation 0.08 | Neutralization Sector | Pasteurization On`.
+
+### 13. Investing for the Future
+
+- **Hypothesis** Firms with persistently rising long-term investment are more likely to generate future profit growth.（长期投资趋势上行，未来盈利能力可能更强。）
+- **Implementation** Build a yearly investment series from `fnd6_newqv1300_ivltq` via backfill+sum, then estimate trend using `ts_regression(..., ts_step(1), 756, rettype=2)`.
+- **Hints to Implement** Boost signal by giving more weight to firms with recently improving revenue.
+
+`ts_regression(ts_sum(ts_backfill(fnd6_newqv1300_ivltq,60),252),ts_step(1),756,rettype=2)` → `ts_regression(ts_sum(ts_backfill(fnd6_newqv1300_ivltq,60),252),ts_step(1),756,rettype=2) * rank(ts_delta(ts_backfill(revenue,60),63))`（投资趋势 * 近期收入改善权重。）
+
+Settings（from source）: `USA | TOP3000 | Decay 0 | Delay 1 | Truncation 0.08 | Neutralization Subindustry | Pasteurization On`.
+
+### 14. Free Cash Flow Quality and Inventory Efficiency Signal
+
+- **Hypothesis** Firms with persistently strong operating cashflow relative to capex should outperform; if inventory efficiency also improves sharply, the edge may strengthen.（高质量 FCF + 库存效率改善，偏多。）
+- **Implementation** Use `est_cashflow_op - est_capex` as FCF-quality proxy, normalize over time, then smooth with `ts_decay_linear`.
+- **Hints to Implement** Amplify signal when inventory turnover improves materially vs last year.
+
+`ts_decay_linear(ts_scale(est_cashflow_op,252),22)-ts_decay_linear(ts_scale(est_capex,252),22)` → `base = ts_decay_linear(ts_scale(est_cashflow_op,252),22)-ts_decay_linear(ts_scale(est_capex,252),22); base * (1 + (ts_delta(inventory_turnover,252) > 0.5 ? 1 : 0))`（库存周转同比显著改善时放大。）
+
+Settings（from source）: `USA | TOP3000 | Decay 2 | Delay 1 | Truncation 0.08 | Neutralization Industry | Pasteurization On`.
+
+### 15. Bull Trap
+
+- **Hypothesis** When short-horizon first-minute reaction trend is deteriorating but a large upside spike appears, that spike may be a bull trap.（短线反应斜率转弱 + 当日冲高，易是假突破。）
+- **Implementation** Compute 5-day slope of `news_pct_1min` using `ts_regression(..., rettype=2)`, combine with recent `news_max_up_ret`, then winsorize extremes.
+- **Hints to Implement** Reduce turnover by smoothing or event-gating.
+
+`slope = ts_regression(ts_backfill(news_pct_1min,60), ts_step(1), 5, rettype=2); winsorize(-ts_backfill(news_max_up_ret,60) * abs(slope),std = 4)` → `slope = ts_regression(ts_backfill(news_pct_1min,60), ts_step(1), 5, rettype=2); trap = winsorize(-ts_backfill(news_max_up_ret,60) * abs(slope),std=4); ts_decay_linear(trap,5)`（加衰减降换手。）
+
+Settings（from source）: `USA | TOP3000 | Decay 0 | Delay 1 | Truncation 0.08 | Neutralization Industry | Pasteurization On`.
