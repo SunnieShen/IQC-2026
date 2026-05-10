@@ -95,15 +95,84 @@ Settings（from source）: `USA | TOP3000 | Decay 0 | Delay 1 | Truncation 0.08 
 Settings（from source）: `USA | TOP3000 | Decay 0 | Delay 1 | Truncation 0.08 | Neutralization Market | Pasteurization On`.
 ![[Pasted image 20260508145248.png]]
 
-### 9. Volatility arbitrage
+### 9. Volatility arbitrage (测试中)
 
 - **Hypothesis** Higher volatility is often observed in bearish regimes, while lower realized volatility with relatively high implied volatility may indicate stronger forward bullish sentiment.（隐波相对高、历波相对低时偏多。）
 - **Implementation** Build implied-vs-realized volatility ratio: long when implied volatility significantly exceeds historical volatility, short the opposite.
 - **Hints to Implement** Use `ts_backfill` to reduce missing-data breaks in option-implied volatility fields.
 
-`implied_volatility_call_120/parkinson_volatility_120` → `ts_backfill(implied_volatility_call_120,120)/parkinson_volatility_120`（先补齐隐波缺失，减少 NaN 导致的权重断裂。）
+`implied_volatility_call_120/parkinson_volatility_120` → `group_rank(ts_backfill(implied_volatility_call_120,10)/max(ts_backfill(parkinson_volatility_120,10),0.005),sector)`
 
 Settings（from source）: `USA | TOP200 | Decay 0 | Delay 1 | Truncation 0.08 | Neutralization Sector | Pasteurization On`.
+
+![[Pasted image 20260509194142.png]]
+
+```markdown
+## Weight Test 在测什么（核心）
+
+- 看的是单只股票在组合里能占到的资金权重是否超过上限（你写的是全书 10%）。
+- 平台里 Truncation 会直接参与约束权重：`0.08` ≈ 单票上限 8%，`0.1` ≈ 10%（具体以你界面说明为准）。
+- 失败常见两类原因：  
+    ① Coverage 太低/多空严重不平衡（例如某天有效股票很少）；  
+    ② 信号在横截面上极端集中（少数票数值特别大 → 权重全堆上去）。
+
+你的 case：Sharpe/Fitness 正常，但某日 concentration 到 50%，更像是 ② 极值/厚尾，不是“没信号”。
+
+---
+
+## 为什么 `ts_backfill(...,1)` 和原版几乎一样
+
+`implied_volatility_call_120/parkinson_volatility_120` 与  
+`ts_backfill(implied_volatility_call_120,1)/parkinson_volatility_120`  
+指标一模一样很常见，因为：
+
+- 问题主要来自 `parkinson_volatility_120` 很小或为 0 时，比值爆炸，一两支票把中国日权重打满；
+- `backfill(1)` 只补极短缺失，不消除分母过小带来的 tail，所以 Weight concentration 不会变好。
+
+---
+
+## 按官方思路的修复顺序（建议你按这个做）
+
+### 1）先把分母“钉住地板”（防除以接近 0）
+
+例如（表达式里用 `max` 或等价安全分母，数值按平台调）：
+
+implied_volatility_call_120 / max(parkinson_volatility_120, 0.01)
+
+双边缺失严重时：
+
+ts_backfill(implied_volatility_call_120, d) / max(ts_backfill(parkinson_volatility_120, d), 0.01)
+
+`d` 先试 20–60（期权/波动字段别一上来 120，容易拖钝+过补）。
+
+### 2）压缩横截面分布（官方说的 rank / zscore）
+
+rank(implied_volatility_call_120 / max(parkinson_volatility_120, 0.01))
+
+或先 ratio 再标准化：
+
+ts_zscore(implied_volatility_call_120 / max(parkinson_volatility_120, 0.01), 63)
+
+这一步通常比单纯降 Truncation 更对症，因为是从根上干掉“单点极大值”。
+
+### 3）设置里调 Truncation（配合用）
+
+- 若有 concentration：把 Truncation 从 0.08 降到 0.05–0.06 往往立竿见影。
+- 注意：Truncation 救的是尾部权重，若信号本身每天都是“一两只独大”，还要靠 ② 的 rank/zscore + 分母保护。
+
+### 4）检查 Coverage（官方提醒）
+
+跑结果图里看：  
+失败日附近 long/short 数量是否 <10 或总数 <20。  
+若是 coverage 塌了：
+
+- 用 `ts_backfill` 适度拉长（别盲目大窗口）；
+- 或用 `trade_when(流动性条件, signal, -1)` 避免在无效层更新（但门槛太严会加剧 “too few instruments”，要和 rank 一起用）。
+
+### 5）官方底线
+
+若 分母保护 + rank/zscore + 合理 backfill + Truncation + coverage 仍过不了，这条表达式的可交易形态可能就做不圆，只能换构造或换字段组合。
+```
 
 ### 10. Implied Volatility Spread as a predictor
 
@@ -164,3 +233,78 @@ Settings（from source）: `USA | TOP3000 | Decay 2 | Delay 1 | Truncation 0.08 
 `slope = ts_regression(ts_backfill(news_pct_1min,60), ts_step(1), 5, rettype=2); winsorize(-ts_backfill(news_max_up_ret,60) * abs(slope),std = 4)` → `slope = ts_regression(ts_backfill(news_pct_1min,60), ts_step(1), 5, rettype=2); trap = winsorize(-ts_backfill(news_max_up_ret,60) * abs(slope),std=4); ts_decay_linear(trap,5)`（加衰减降换手。）
 
 Settings（from source）: `USA | TOP3000 | Decay 0 | Delay 1 | Truncation 0.08 | Neutralization Industry | Pasteurization On`.
+
+### 16. Overnight–intraday tug-of-war + reversal（隔夜日内与日内拉锯增强反转）
+
+- **Hypothesis** When overnight and daytime returns systematically pull in opposite directions (“tug-of-war”), participation is often noisy short-term positioning; conditional on unusually high tug frequency, short-window reversals (`-returns` / pullback) may be stronger.（隔夜与日内方向反复背离时，噪声与博弈上升；在近期频率异常偏高时增强短反转期望。）
+- **Implementation** Decompose daytime vs overnight returns; flag bidirectional tug `or(high-open/low-close-like, low-open/high-close-like)`; score abnormal tug frequency (`ts_mean` → `ts_zscore`); scale reversal by tug rank with vol penalty; gate liquidity and neutralize cross-section within `subindustry`.
+- **Hints to Implement** Use `Neutralization Industry/Subindustry` if `None` shows style drift; lengthen `ts_mean/is_tug` window to cut turnover when Fitness is low.
+
+截图原版：`enhanced_signal = -returns * (1 + rank(tug_freq_1m/ts_mean(tug_freq_1m,120)))`；改为下方行内注解版（双边 tug、`ts_zscore` 异常度、波动降权、`trade_when`、`group_rank`）。
+
+```python
+# 日内收益（开盘→收盘）：识别“白天方向”
+ret_day = close / open - 1;
+# 隔夜（昨收→今开盘）再通过日内分拆：隔夜与日线配合为拉扯
+ret_ov = close / ts_delay(close, 1) / (close / open) - 1;
+
+# Tug：隔夜涨跌与日内涨跌反向（高开低走 或 低开高走）
+is_tug = if_else(or(and(ret_ov > 0, ret_day < 0), and(ret_ov < 0, ret_day > 0)), 1, 0);
+tug_freq = ts_mean(is_tug, 20);
+tug_abn = ts_zscore(tug_freq, 120);
+
+vol_adj = 1 + ts_std_dev(returns, 20);
+core = -ts_zscore(returns, 20) * rank(tug_abn) / vol_adj;
+
+trade_when(volume/adv20 > 0.7, group_rank(core, subindustry), -1)
+```
+
+Settings（建议）: `USA | TOPSP500/TOP3000 | Decay 4~6 | Delay 1 | Truncation 0.05~0.08 | Neutralization Subindustry | Pasteurization On`。（截图曾用 TOP SP500、Decay 6、Truncation 0.01、Neutralization None，提交前优先加上中性化与子宇宙自检。）
+
+**16.x 叙事整理（摘自社区讨论稿，便于自检）**
+
+- **三段式逻辑**：① **形态**：隔夜跳空与日内收跌（原版）或其它「隔夜 vs 盘中」拉锯；② **频率异常**：近 **20** 个交易日出现频率 vs 过去 **120** 日均值（原版用比值，改版用 `ts_zscore` 更稳）；③ **条件反转**：`-returns`/短反转 乘上以「博弈强度」为权重的 amplifier，而不是简单相加——往往有利于 **Fitness**。
+- **优点**：区别于纯收益动量/反转；用 **开收盘结构**刻画行为金融学（开盘非理性 vs 盘中修正）；用 **长短窗频率对比**弱化「本来就爱拉锯」的品种，盯住近期行为突变样本。
+- **缺点与风险**：① **换手偏高**：日频反转放大器类常见，需 `**Decay`、`trade_when`、略拉长 tug 计数窗**控 turnover；② **宏观单边市敏感**：剧烈趋势/系统性冲击年（帖中例：**2022** 类利率通胀驱动）拉锯形态可能失效或为负反馈，宜做样本外与市场状态对照；③ **行业集中度**：无 **Industry/Sector Neutralization** 易在科技链、能源等板块同向回撤，`group_rank(,subindustry)` 或 settings 中性化必选其一；④ **Delay 敏感**：纯价形态对执行延迟敏感，**Delay 0 vs 1** Sharpe 常明显分化，若以 Delay1 为目标回测需在表达式层控噪（如已实现之 `trade_when`、`vol_adj`）。
+
+### 17. Debt–cashflow correlation（债务与现金流滚动相关 + 行业内尺度 + 衰减）
+
+- **Hypothesis** Short-horizon co-movement between leverage (`debt_st`) and operating cash generation (`cashflow`) can flag balance-sheet stress vs cash reality; after industry-relative scaling and smoothing, the anomaly may be tradable.（45 日滚动相关经子行业内 `group_scale` 后，再标准化、衰减、弱幂压缩尾部。）
+- **Implementation** `ts_corr(debt_st, cashflow, 45)` → `group_scale(..., subindustry)` → `zscore` → `ts_decay_linear(..., 40)` → `-signed_power(..., 0.2)`（帖中原式；`signed_power` 压缩极值方向。）
+- **Hints to Implement** 帖中问题：**少数票权重/集中度爆表**或字段缺失导致断层；拉长窗与 `backfill`/`group_fill` 若无效，优先 **截尾（`winsorize`/`hump`）**、对相关序列先 `**ts_backfill`**、中间层 `**ts_mean` 平滑**，或用 `**if_else` 去掉 NaN/极端样本**；**Truncation** 与 **Decay** 联动微调（你已用 `Truncation 0.01` 时需防信号被抹尽），并保持 **Subindustry** 中性化。
+
+**帖中原式**
+
+```text
+-signed_power(ts_decay_linear(zscore(group_scale(ts_corr(debt_st, cashflow, 45), subindustry)), 40), 0.2)
+```
+
+**权重/集中度改进（按优先级试）**
+
+`…` → 先对相关输入做补缺再相关：  
+`-signed_power(ts_decay_linear(zscore(group_scale(ts_corr(ts_backfill(debt_st,60), ts_backfill(cashflow,60), 45), subindustry)), 40), 0.2)`
+
+`…` → 对相关层 winsorize 再入内层：  
+`-signed_power(ts_decay_linear(zscore(group_scale(winsorize(ts_corr(ts_backfill(debt_st,60), ts_backfill(cashflow,60), 45), std=4), subindustry)), 40), 0.2)`
+
+`…` → 输出再横截面压平（Weight test 友好）：  
+`group_rank(-signed_power(ts_decay_linear(zscore(group_scale(ts_corr(ts_backfill(debt_st,60), ts_backfill(cashflow,60), 45), subindustry)), 40), 0.2), subindustry)`
+
+**行内注解版（与帖中逻辑等价，可读用）**
+
+```python
+# 45 个交易日：债务与现金流的线性相关强度
+corr_dc = ts_corr(ts_backfill(debt_st, 60), ts_backfill(cashflow, 60), 45);
+# 子行业内去量纲/可比尺度（原帖 group_scale）
+scaled = group_scale(corr_dc, subindustry);
+# 截面 zscore（原帖 zscore）
+z = zscore(scaled);
+# 40 日线性衰减平滑，降噪、降换手
+smooth = ts_decay_linear(z, 40);
+# 负向 + signed_power(..., 0.2)：弱幂压尾，减轻少数极端点主导权重
+-signed_power(smooth, 0.2)
+```
+
+Settings（from 帖）: `USA | TOP500 | Decay 300 | Delay 1 | Truncation 0.01 | Neutralization Subindustry | Pasteurization On | NaN Off`。**若 Weight concentration 仍爆**：优先表达式 `**winsorize` / `group_rank(..., subindustry)`**；**Decay 300** 与 `ts_decay_linear(...,40)` 易双重过平，若 Sharpe 崩塌可改为 `**Decay 20~120`** 让主要平滑留在式子内；**Truncation** 按平台含义与回测曲线微调，避免“单票限权过严 + 信号过弱”同时出现。
+
+### 18. (已经提交的高质量alpha, +notes

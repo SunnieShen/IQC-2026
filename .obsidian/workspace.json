@@ -93,8 +93,7 @@
       }
     ],
     "direction": "horizontal",
-    "width": 300,
-    "collapsed": true
+    "width": 300
   },
   "right": {
     "id": "ae51e4d4d57806e1",
@@ -201,19 +200,19 @@
   },
   "active": "8317cf95e9b1d8d4",
   "lastOpenFiles": [
+    "Alpha tracker.md",
+    "WorldQuant Challenge Gold Certificate.pdf",
+    "Alpha example IQC.md",
+    "Pasted image 20260509194142.png",
     "Pasted image 20260508145248.png",
     "Pasted image 20260507172642.png",
     "Pasted image 20260506210049.png",
     "Pasted image 20260506203334.png",
     "Pasted image 20260506202956.png",
     "Alpha example for beginners.md",
-    "Alpha tracker.md",
-    "Alpha example IQC.md",
     "Pasted image 20260503190446.png",
     "Pasted image 20260503190426.png",
     "Pasted image 20260503185851.png",
-    "Pasted image 20260503185811.png",
-    "Pasted image 20260503185734.png",
-    "Pasted image 20260503185721.png"
+    "Pasted image 20260503185811.png"
   ]
 }
