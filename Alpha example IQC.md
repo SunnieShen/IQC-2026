@@ -279,32 +279,46 @@ Settings（建议）: `USA | TOPSP500/TOP3000 | Decay 4~6 | Delay 1 | Truncation
 -signed_power(ts_decay_linear(zscore(group_scale(ts_corr(debt_st, cashflow, 45), subindustry)), 40), 0.2)
 ```
 
-**权重/集中度改进（按优先级试）**
+
+![[ec56881e2becf5c14b21168342efbe41.png]]
+
+**权重/集中度改进
 
 `…` → 先对相关输入做补缺再相关：  
-`-signed_power(ts_decay_linear(zscore(group_scale(ts_corr(ts_backfill(debt_st,60), ts_backfill(cashflow,60), 45), subindustry)), 40), 0.2)`
+-signed_power(ts_decay_linear(zscore(group_scale(ts_corr(**ts_backfill(debt_st,60)**, **ts_backfill(cashflow,60)**, 45), subindustry)), 40), 0.2)
 
 `…` → 对相关层 winsorize 再入内层：  
-`-signed_power(ts_decay_linear(zscore(group_scale(winsorize(ts_corr(ts_backfill(debt_st,60), ts_backfill(cashflow,60), 45), std=4), subindustry)), 40), 0.2)`
+```python
+signed_power(ts_decay_linear(zscore(group_scale(winsorize(ts_corr(ts_backfill(debt_st,60), ts_backfill(cashflow,60), 45), std=4), subindustry)), 40), 0.2)```
+```
 
 `…` → 输出再横截面压平（Weight test 友好）：  
 `group_rank(-signed_power(ts_decay_linear(zscore(group_scale(ts_corr(ts_backfill(debt_st,60), ts_backfill(cashflow,60), 45), subindustry)), 40), 0.2), subindustry)`
 
-**行内注解版（与帖中逻辑等价，可读用）**
-
+- neutralization = "market", ==为什么???==
+  `ts_backfill( , 60 or 128 or....扫描参数)` 
 ```python
-# 45 个交易日：债务与现金流的线性相关强度
-corr_dc = ts_corr(ts_backfill(debt_st, 60), ts_backfill(cashflow, 60), 45);
-# 子行业内去量纲/可比尺度（原帖 group_scale）
-scaled = group_scale(corr_dc, subindustry);
-# 截面 zscore（原帖 zscore）
-z = zscore(scaled);
-# 40 日线性衰减平滑，降噪、降换手
-smooth = ts_decay_linear(z, 40);
-# 负向 + signed_power(..., 0.2)：弱幂压尾，减轻少数极端点主导权重
--signed_power(smooth, 0.2)
-```
+# 45 日滚动相关经子行业内 group_scale 后，再标准化、衰减、弱幂压缩尾部。
 
-Settings（from 帖）: `USA | TOP500 | Decay 300 | Delay 1 | Truncation 0.01 | Neutralization Subindustry | Pasteurization On | NaN Off`。**若 Weight concentration 仍爆**：优先表达式 `**winsorize` / `group_rank(..., subindustry)`**；**Decay 300** 与 `ts_decay_linear(...,40)` 易双重过平，若 Sharpe 崩塌可改为 `**Decay 20~120`** 让主要平滑留在式子内；**Truncation** 按平台含义与回测曲线微调，避免“单票限权过严 + 信号过弱”同时出现。
+-signed_power(
+	ts_decay_linear(zscore(group_scale(ts_corr(
+		ts_backfill(debt_st,252), ts_backfill(cashflow,252), 45),market)), 40),
+		0.1)
+```
+![[Pasted image 20260512013830.png]]
+- D1 Score + 237
 
 ### 18. (已经提交的高质量alpha, +notes
+![[446544b10603d2fe7c08f97deb6955e2.png]]
+![[da5d1c189f59d5955518349fa4868e4a.png]]
+
+
+### 19.
+![[0e282cd3cd313b41741f9d22b97b1bf6.png]]
+![[de5410502b2ca593efd413cde45037e7.png]]
+![[d9dcf937f0f43da5cec9608d42569155.png]]
+
+
+
+# D0 alpha
+https://support.worldquantbrain.com/hc/en-us/community/posts/32971895479447--How-to-Create-High-Quality-China-Region-D0-Alphas-Decay-D0
