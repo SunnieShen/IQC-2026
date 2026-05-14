@@ -279,7 +279,6 @@ Settings（建议）: `USA | TOPSP500/TOP3000 | Decay 4~6 | Delay 1 | Truncation
 -signed_power(ts_decay_linear(zscore(group_scale(ts_corr(debt_st, cashflow, 45), subindustry)), 40), 0.2)
 ```
 
-
 ![[ec56881e2becf5c14b21168342efbe41.png]]
 
 **权重/集中度改进
@@ -288,6 +287,7 @@ Settings（建议）: `USA | TOPSP500/TOP3000 | Decay 4~6 | Delay 1 | Truncation
 -signed_power(ts_decay_linear(zscore(group_scale(ts_corr(**ts_backfill(debt_st,60)**, **ts_backfill(cashflow,60)**, 45), subindustry)), 40), 0.2)
 
 `…` → 对相关层 winsorize 再入内层：  
+
 ```python
 signed_power(ts_decay_linear(zscore(group_scale(winsorize(ts_corr(ts_backfill(debt_st,60), ts_backfill(cashflow,60), 45), std=4), subindustry)), 40), 0.2)```
 ```
@@ -296,7 +296,8 @@ signed_power(ts_decay_linear(zscore(group_scale(winsorize(ts_corr(ts_backfill(de
 `group_rank(-signed_power(ts_decay_linear(zscore(group_scale(ts_corr(ts_backfill(debt_st,60), ts_backfill(cashflow,60), 45), subindustry)), 40), 0.2), subindustry)`
 
 - neutralization = "market", ==为什么???==
-  `ts_backfill( , 60 or 128 or....扫描参数)` 
+`ts_backfill( , 60 or 128 or....扫描参数)`
+
 ```python
 # 45 日滚动相关经子行业内 group_scale 后，再标准化、衰减、弱幂压缩尾部。
 
@@ -305,20 +306,257 @@ signed_power(ts_decay_linear(zscore(group_scale(winsorize(ts_corr(ts_backfill(de
 		ts_backfill(debt_st,252), ts_backfill(cashflow,252), 45),market)), 40),
 		0.1)
 ```
+
 ![[Pasted image 20260512013830.png]]
+
 - D1 Score + 237
 
 ### 18. (已经提交的高质量alpha, +notes
+
 ![[446544b10603d2fe7c08f97deb6955e2.png]]
 ![[da5d1c189f59d5955518349fa4868e4a.png]]
 
-
 ### 19.
+
 ![[0e282cd3cd313b41741f9d22b97b1bf6.png]]
 ![[de5410502b2ca593efd413cde45037e7.png]]
 ![[d9dcf937f0f43da5cec9608d42569155.png]]
 
+# D0 alpha（Decay 0）
+
+**参考帖**：[How to Create High Quality China Region D0 Alphas (Decay D0)](https://support.worldquantbrain.com/hc/en-us/community/posts/32971895479447--How-to-Create-High-Quality-China-Region-D0-Alphas-Decay-D0)
+
+**本节结构**：§1 概念 → §2 构造原则 → §3 数据集 → §4 样例信号 → §5 技巧 → §6 测试迭代 → §7 小结 → **§8 实践笔记（价量 + 杠杆门控，含版本 A/B/C）**
+
+---
+
+### **1. What is D0? Why it matters**
+
+- **D0 = Settings 里的 Decay 0**：仿真中**不对仓位向目标权重做按日线性衰减平滑**（与 **Delay 0/1**「用哪一天可得数据」是不同旋钮，勿混为一谈）。
+- **信号要求**：Decay 0 下换手常更高、对噪声更敏感；更依赖表达式内 `**ts_mean` / `ts_decay_linear`**、`**trade_when`**、流动性过滤、**Neutralization / Truncation**。
+- **中国区**：仍以短窗价量、事件、舆情为主；**基本面多为慢变量**，适合门控或「长窗变化量」，避免与短信号硬乘导致截面被稀释。
+
+---
+
+### **2. How to Build D0 Alphas for China**
+
+#### Signal design principles
+
+- **Short-term data**：`volume`、短窗 `returns` / `close`、舆情脉冲等。
+- **Operators**：`ts_delta`、`ts_arg_max` 定触发；`rank` / `zscore` / `group_rank` 稳截面；`trade_when` 控执行与换手。
+
+#### Template（`trade_when` + 波动触发）
+
+```text
+when = ts_arg_max(parkinson_volatility_10, 3) == 0;
+trade_when(when, -rank(ts_delta(close, 2)), -1)
+```
+
+- **Trigger (`when`)**：近窗波动率高点落在当日（脉冲）。
+- **Signal**：短窗价格反向（示例）。
+- **Note**：模板表达「事件 + 短反转」；具体字段以 China 数据集为准。
+
+---
+
+### **📊 3. Best Datasets for China D0 Alphas (High Fitness + Sharpe)**
 
 
-# D0 alpha
-https://support.worldquantbrain.com/hc/en-us/community/posts/32971895479447--How-to-Create-High-Quality-China-Region-D0-Alphas-Decay-D0
+| Dataset Type              | Recommended Fields                                                   | Why They Work                        |
+| ------------------------- | -------------------------------------------------------------------- | ------------------------------------ |
+| 📈 **Price/Volume**       | `volume`, `parkinson_volatility_10`, `returns`                       | React quickly to market              |
+| 🗞 **News/Sentiment**     | `news_mins_10_pct_dn`, `vec_avg(nws12_afterhsz_sl)`                  | Capture market reactions             |
+| 🧠 **Analyst Views**      | `mdl110_analyst_sentiment`, `mdl110_score`                           | Forward-looking insights             |
+| ⚖️ **Valuation**          | `ebit/assets`, `liabilities/assets`, `capex/assets`                  | Add fundamental bias                 |
+| ⚙️ **Volatility/Options** | `implied_volatility_call_120`, `skew_60d`, `parkinson_volatility_60` | Indicate uncertainty & action points |
+
+
+ 
+
+💡 **Tip**: Combine fast-reacting datasets with mild fundamental info for stability.
+
+---
+
+### **🔍 4. Sample High-Fitness, High-Sharpe D0 Alpha Signals**
+
+#### 📌 **Alpha #1: Volume spike + price momentum reversal**
+
+```text
+x = ts_rank(volume, 5) * rank(ts_delta(close, 1));
+when = ts_arg_max(parkinson_volatility_10, 3) == 0;
+trade_when(when, -x, -1)
+```
+
+- Reacts to volume surge + reversal.
+- Good for short-term reversals in volatile stocks.
+
+---
+
+#### 📌 **Alpha #2: News sentiment-driven reaction**
+
+```text
+x = ts_rank(vec_avg(nws12_afterhsz_sl), 5);
+when = ts_arg_max(news_mins_10_pct_dn, 5) == 0;
+trade_when(when, x, -1)
+```
+
+- Uses recent news sentiment and spike in negative news volume.
+- Especially effective for headline-sensitive stocks.
+
+---
+
+#### 📌 **Alpha #3: Analyst sentiment + price shock**
+
+```text
+x = scale(mdl110_analyst_sentiment + mdl110_score);
+when = ts_delta(close, 1) < -0.02;
+trade_when(when, x, -1)
+```
+
+- Contrarian trade: price drop but analyst signal strong.
+- Combines fundamentals with price event.
+
+---
+
+#### 📌 **Alpha #4: High IV vs Historical Volatility**
+
+```text
+x = rank(implied_volatility_call_120 / parkinson_volatility_120);
+when = ts_arg_max(implied_volatility_call_120, 3) == 0;
+trade_when(when, -x, -1)
+```
+
+- Measures fear vs history; trades when fear is unusually high.
+
+---
+
+### **🔧 5. Tricks to Boost Fitness & Sharpe in China D0**
+
+
+| Technique                     | Description              |
+| ----------------------------- | ------------------------ |
+| `group_neutralize(x, sector)` | Helps reduce sector bias |
+| `zscore()` + `rank()`         | Stabilizes raw values    |
+| Combine multiple weak signals | Improves robustness      |
+| Add filters like `volume > x` | Avoids illiquid stocks   |
+
+
+ 
+
+---
+
+### **🧪 6. Testing & Iterating**
+
+- **Start with 10-15 alphas** mixing price/sentiment/volume.
+- Run **fitness + IS-Ladder Sharpe** checks.
+- Remove highly correlated or low-performance signals.
+- Submit best combinations to Power Pool or sub-universe strategies.
+
+---
+
+### **7. 小结（Final Thoughts）**
+
+Building D0 alphas in China is **challenging but rewarding**. Focus on:
+
+- Short-term, high-frequency signals
+- Strong filters and clean execution timing
+- Thoughtful signal design (avoid noise, add neutralization)
+
+更细的价量 + 慢基本面组合，见 **§8 实践笔记**（门控与 A/B/C）。
+
+---
+
+
+
+
+
+
+
+
+
+# D0 alpha track: 
+
+### **1. 价量核 +** `liabilities/assets`**（门控与 A/B/C）==目前最好的还是1.3B,score+2700==**
+
+#### 8.1 基线与对照
+
+
+| 版本      | 思路                                                               | 备注                                               |
+| ------- | ---------------------------------------------------------------- | ------------------------------------------------ |
+| **1.0** | 纯价量短信号                                                           | `decay=10` `truncation=0.08` 等 Settings 另记       |
+| **1.1** | `-rank(ts_mean(ts_delta(close,1),5)) * rank(liabilities/assets)` | 效果弱于 1.0：慢水平基本面与 D0 短窗价量**时间尺度不对齐**，硬乘易稀释截面或引入噪声 |
+| **1.2** | 基本面改**门控**（`trade_when`），不乘进信号                                   | 推荐方向：慢变量做**样本筛选**，见下                             |
+
+
+**1.0（基线）**
+
+```text
+-rank(ts_mean(ts_delta(close, 1), 5))
+```
+
+**1.2（门控入门：杠杆中间带）**
+
+```text
+base = -rank(ts_mean(ts_delta(close, 1), 5));
+lev = rank(liabilities/assets);
+trade_when(lev > 0.2 && lev < 0.8, base, -1)
+```
+
+`0.2/0.8` 可扫 `0.15~0.85` 等；本质是**筛选交易日/标的**，避免慢变量天天改权重。
+![[Pasted image 20260514140833.png]]
+
+**1.3 优化版本**
+**A（优先）：`ts_zscore` + 波动归一 + 子行业内杠杆门控 + 流动性**
+
+```text
+ret1 = ts_delta(close, 1);
+base = -ts_zscore(ts_mean(ret1, 5), 20);
+vol_adj = 1 + ts_std_dev(returns, 20);
+lev = group_rank(liabilities/assets, subindustry);
+liq = volume/adv20;
+
+core = base/vol_adj;
+trade_when(and(liq > 0.8, and(lev > 0.15, lev < 0.85)), group_rank(core, subindustry), -1)
+```
+
+![[Pasted image 20260514140851.png]]
+
+**B：杠杆用「变化」弱耦合（`ts_delta` 63）+ 流动性**
+
+```text
+ret1 = ts_delta(close, 1);
+base = -rank(ts_mean(ret1, 5));
+dlev = rank(ts_delta(liabilities/assets, 63));
+liq = volume/adv20;
+
+core = base * (0.8 + 0.2 * dlev);
+trade_when(liq > 0.8, group_rank(core, subindustry), -1)
+```
+
+![[Pasted image 20260514140908.png]]
+
+**C：保持 1.0 核 + `group_rank` 杠杆门控 + 流动性（改动最小）**
+
+```text
+base = -rank(ts_mean(ts_delta(close, 1), 5));
+lev = group_rank(liabilities/assets, subindustry);
+liq = volume/adv20;
+
+trade_when(and(liq > 0.8, and(lev > 0.2, lev < 0.8)), base, -1)
+```
+
+![[Pasted image 20260514140925.png]]
+
+#### 8.3 参数扫描（Sharpe / Fitness 未过线时）
+
+
+| 旋钮        | 建议网格                                              |
+| --------- | ------------------------------------------------- |
+| 价量窗       | `ts_mean(ret1, 5)` → `8`、`10`                     |
+| `vol_adj` | `ts_std_dev(returns, 10/20/30)`                   |
+| 杠杆带       | `(0.15, 0.85)`、`(0.2, 0.8)`、`(0.25, 0.75)`        |
+| 流动性       | `liq > 0.7`、`0.8`、`1.0`                           |
+| Settings  | **Neutralization** 优先 `Subindustry`，其次 `Industry` |
+
+
+> 若竞赛 cutoff 要求更高 Sharpe/Fitness：在 **Decay 0** 下优先用 **A + Subindustry 中性化**，再扫上表；`subindustry` 字段名以平台数据集为准（若无则换 `industry`/`sector`）。
+
