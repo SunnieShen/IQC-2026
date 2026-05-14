@@ -533,6 +533,7 @@ trade_when(liq > 0.8, group_rank(core, subindustry), -1)
 ```
 
 ![[Pasted image 20260514140908.png]]
+![[Pasted image 20260514144032.png]]
 
 **C：保持 1.0 核 + `group_rank` 杠杆门控 + 流动性（改动最小）**
 
